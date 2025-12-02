@@ -60,15 +60,10 @@ public class PopulateRealisticDB {
     private static void createSchema(Connection conn) throws SQLException {
         try (Statement s = conn.createStatement()) {
             s.execute("CREATE TABLE IF NOT EXISTS courses (id SERIAL PRIMARY KEY, code TEXT UNIQUE NOT NULL, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT NOW());");
-
             s.execute("CREATE TABLE IF NOT EXISTS topics (id SERIAL PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE, code TEXT NOT NULL, title TEXT NOT NULL, description TEXT, position INTEGER NOT NULL, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(course_id, position));");
-
             s.execute("CREATE TABLE IF NOT EXISTS classes (id SERIAL PRIMARY KEY, topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE, title TEXT NOT NULL, content TEXT, class_number INTEGER NOT NULL, learned_at TIMESTAMP, created_at TIMESTAMP DEFAULT NOW(), UNIQUE(topic_id, class_number));");
-
             s.execute("CREATE TABLE IF NOT EXISTS assignments (id SERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT, created_at TIMESTAMP DEFAULT NOW(), due_date DATE);");
-
             s.execute("CREATE TABLE IF NOT EXISTS assignment_topics (assignment_id INTEGER NOT NULL REFERENCES assignments(id) ON DELETE CASCADE, topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE, PRIMARY KEY (assignment_id, topic_id));");
-
             s.execute("CREATE TABLE IF NOT EXISTS resources (id SERIAL PRIMARY KEY, class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE, kind TEXT NOT NULL, url TEXT, description TEXT, created_at TIMESTAMP DEFAULT NOW());");
         }
     }

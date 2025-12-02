@@ -21,3 +21,8 @@ Thumbs.db
 .env
 *.env
 secrets.properties
+
+# RAG data exports
+chunks.jsonl
+*.jsonl
+*.db
