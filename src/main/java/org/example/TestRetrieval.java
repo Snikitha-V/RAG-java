@@ -46,6 +46,11 @@ public class TestRetrieval {
         String assembled = RetrievalService.assembleContext(ctx, Config.CONTEXT_K, 2000);
         System.out.println(assembled);
 
+        // Generate answer using LLM
+        System.out.println("\n==== LLM ANSWER ====");
+        String answer = svc.ask(query);
+        System.out.println(answer);
+
         cross.close();
     }
 }

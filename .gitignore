@@ -22,12 +22,18 @@ Thumbs.db
 *.env
 secrets.properties
 
-# RAG data exports
-chunks.jsonl
-*.jsonl
-*.db
-
-# Large ONNX model files(too large to upload to Github)
+# Large model files (too large for GitHub)
 models/
 *.onnx
+*.gguf
 
+# Lucene index (regeneratable)
+lucene_index/
+lucene-index/
+
+# llama.cpp binaries
+llama/
+
+# RAG data exports
+*.jsonl
+*.db

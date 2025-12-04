@@ -10,6 +10,7 @@ public class RetrievalService {
     private final LuceneIndexService lucene;
     private final CrossEncoderScorer crossEncoder;
     private final DataFetcher dbFetcher;
+    private final LLMClient llm;
     private final LruCache<String, float[]> embedCache = new LruCache<>(1000);
     private final LruCache<String, List<DbChunk>> retrCache = new LruCache<>(500);
 
@@ -19,6 +20,7 @@ public class RetrievalService {
         this.lucene = lucene;
         this.crossEncoder = crossEncoder;
         this.dbFetcher = dbFetcher;
+        this.llm = new LLMClient();
     }
 
     /**
@@ -161,5 +163,36 @@ public class RetrievalService {
             if (used >= charBudget) break;
         }
         return sb.toString();
+    }
+
+    /**
+     * Full RAG pipeline: retrieve context and generate answer using LLM.
+     */
+    public String ask(String query) throws Exception {
+        // 1) Retrieve relevant chunks
+        List<DbChunk> context = retrieve(query);
+        
+        // 2) Assemble context
+        String contextStr = assembleContext(context, Config.CONTEXT_K, 2000);
+        
+        // 3) Build prompt
+        String fullPrompt = buildPrompt(query, contextStr);
+        
+        // 4) Generate answer
+        long t0 = System.nanoTime();
+        String answer = llm.generate(fullPrompt, 300);
+        System.out.println("[timing] llm generate ms=" + ((System.nanoTime() - t0) / 1_000_000));
+        
+        return answer;
+    }
+
+    /**
+     * Build prompt for the LLM with context and query.
+     */
+    private String buildPrompt(String query, String context) {
+        return "[INST] You are a helpful learning assistant. Use the following context from the user's learning history to answer their question.\n\n" +
+               "CONTEXT:\n" + context + "\n" +
+               "QUESTION: " + query + "\n\n" +
+               "Answer based on the context above. If the context doesn't contain relevant information, say so. [/INST]";
     }
 }
