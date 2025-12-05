@@ -177,34 +177,184 @@ public class RetrievalService {
     }
 
     /**
-     * Full RAG pipeline: retrieve context and generate answer using LLM.
+     * Full RAG pipeline with Level-7 routing: intent classification, SQL for factual,
+     * RAG for semantic, hybrid for mixed queries.
      */
     public String ask(String query) throws Exception {
-        // 1) Retrieve relevant chunks (Level 4)
-        List<DbChunk> context = retrieve(query); // existing method returns reranked chunks
+        // 0. Setup helpers
+        IntentClassifier.Intent intent = IntentClassifier.classify(query);
+        SqlService sql = new SqlService(Config.DB_URL, Config.DB_USER, Config.DB_PASS);
+        LOG.info("Query intent: {}", intent);
 
-        // 2) Build prompt token-aware
-        PromptBuilder pb = new PromptBuilder(Config.CROSS_ENCODER_ONNX_DIR, 4096, 400, 200);
-        String prompt = pb.buildPrompt(context, query, Config.CONTEXT_K);
+        // For MIXED: we'll run SQL first to get authoritative facts
+        DbChunk sqlChunk = null;
 
-        // 3) Call LLM
+        if (intent == IntentClassifier.Intent.FACTUAL || intent == IntentClassifier.Intent.MIXED) {
+            // Heuristic: try to extract an entity/token we can send to SQL (topic id, class id, etc.)
+            String topicId = extractTopicIdFromQuery(query);
+            if (topicId != null) {
+                LOG.info("Extracted topicId: {}", topicId);
+                // example factual SQL queries based on user phrasing
+                try {
+                    if (query.toLowerCase().contains("when")) {
+                        Optional<Map<String,String>> range = sql.queryLearnedAtRange(topicId);
+                        if (range.isPresent()) {
+                            String body = sql.sqlDateRangeBody(topicId, range.get());
+                            sqlChunk = sql.buildSqlChunk("learned_range_" + topicId, "SQL_RESULT: learned_at", body);
+                        }
+                    } else if (query.toLowerCase().contains("how many") || query.toLowerCase().contains("count")) {
+                        Optional<Integer> cnt = sql.queryCountClassesForTopic(topicId);
+                        if (cnt.isPresent()) {
+                            String body = sql.sqlCountBody(topicId, cnt.get());
+                            sqlChunk = sql.buildSqlChunk("count_classes_" + topicId, "SQL_RESULT: counts", body);
+                        }
+                    }
+                } catch (Exception e) {
+                    // SQL query failed (schema mismatch, etc.) - fall back to RAG
+                    LOG.warn("SQL query failed, falling back to RAG: {}", e.getMessage());
+                    sqlChunk = null;
+                }
+                // add more SQL cases here as required
+            }
+        }
+
+        // If FACTUAL and we got a SQL result -> return deterministic answer (plus optional context)
+        if (intent == IntentClassifier.Intent.FACTUAL) {
+            if (sqlChunk != null) {
+                // Build a short user-facing deterministic answer from SQL result
+                String deterministicAnswer = extractShortAnswerFromSqlChunk(sqlChunk);
+                // Optionally retrieve a small RAG context to provide explanation
+                List<DbChunk> support = Collections.emptyList();
+                if (shouldAttachRagContextForFactual()) {
+                    support = retrieveTopContextForQuery(query, 3);
+                }
+                // Assemble final output: deterministic answer + context (if any)
+                StringBuilder sb = new StringBuilder();
+                sb.append(deterministicAnswer).append("\n");
+                if (!support.isEmpty()) {
+                    sb.append("\nContext:\n");
+                    for (DbChunk c : support) {
+                        sb.append("- ").append(c.getChunkId()).append(": ").append(snippet(c.getText())).append("\n");
+                    }
+                }
+                return sb.toString();
+            } else {
+                // No SQL result: fall back to RAG retrieval and only return if evidence strong
+                List<Candidate> candidates = denseRetrieveCandidates(query);
+                double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
+                if (topScore < Config.RAG_SCORE_FALLBACK_THRESHOLD) {
+                    return "I don't have that information in your database.";
+                }
+                // else run full RAG pipeline to generate explanation
+                List<DbChunk> context = retrieve(query);
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                long t0 = System.nanoTime();
+                String ans = llm.generate(prompt, 300);
+                LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+                return ans;
+            }
+        }
+
+        // If SEMANTIC: run the full RAG pipeline (no SQL)
+        if (intent == IntentClassifier.Intent.SEMANTIC) {
+            List<DbChunk> context = retrieve(query);
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            long t0 = System.nanoTime();
+            String ans = llm.generate(prompt, 300);
+            LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+            return ans;
+        }
+
+        // If MIXED: we have SQL chunk (may be null if extraction failed)
+        if (intent == IntentClassifier.Intent.MIXED) {
+            List<DbChunk> context = retrieve(query);
+            // insert SQL chunk at top if exists
+            if (sqlChunk != null) {
+                List<DbChunk> merged = new ArrayList<>();
+                merged.add(sqlChunk);
+                merged.addAll(context);
+                context = merged;
+            }
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            long t0 = System.nanoTime();
+            String ans = llm.generate(prompt, 300);
+            LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+            return ans;
+        }
+
+        // Default fallback: run RAG
+        List<DbChunk> context = retrieve(query);
+        String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
         long t0 = System.nanoTime();
-        String rawOutput = llm.generate(prompt, 300);
-        System.out.println("[timing] llm generate ms=" + ((System.nanoTime() - t0) / 1_000_000));
+        String ans = llm.generate(prompt, 300);
+        LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+        return ans;
+    }
 
-        // 4) Verify output (TEMPORARILY DISABLED - model doesn't follow citation format)
-        // VerificationService verifier = new VerificationService(context);
-        // VerificationResult vr = verifier.verify(rawOutput);
-        //
-        // if (!vr.ok) {
-        //     LOG.warn("Verification failed: {}", vr.errors);
-        //     return "I'm sorry — I could not produce a reliable answer from the provided evidence.";
-        // }
-        //
-        // if (vr.isRefusal) return "I don't have that information in your database.";
+    // ========== Helper methods for Level-7 routing ==========
 
-        // Return raw LLM output directly (no verification)
-        return rawOutput;
+    /**
+     * Extract topic ID pattern like C<number>-T<number> from query.
+     */
+    private String extractTopicIdFromQuery(String q) {
+        if (q == null) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+            .compile("\\bC\\d+-T\\d+\\b", java.util.regex.Pattern.CASE_INSENSITIVE)
+            .matcher(q);
+        if (m.find()) return m.group(0).toUpperCase();
+        return null;
+    }
+
+    /**
+     * Should we attach small RAG context for factual answers? Configurable policy.
+     */
+    private boolean shouldAttachRagContextForFactual() {
+        return true; // or Config.SHOW_RAG_FOR_FACTS
+    }
+
+    /**
+     * Retrieve small top-k support context without SQL chunk insertion.
+     */
+    private List<DbChunk> retrieveTopContextForQuery(String query, int k) throws Exception {
+        List<DbChunk> ctx = retrieve(query);
+        if (ctx.size() > k) return ctx.subList(0, k);
+        return ctx;
+    }
+
+    /**
+     * Dense-only candidate fetch to check score for fallback threshold.
+     */
+    private List<Candidate> denseRetrieveCandidates(String query) throws Exception {
+        float[] qvec = embedder.embed(query);
+        return qdrant.search(qvec, 5, Config.QDRANT_EF);
+    }
+
+    /**
+     * Extract short answer from SQL chunk body (first 1-2 lines).
+     */
+    private String extractShortAnswerFromSqlChunk(DbChunk sqlChunk) {
+        String text = sqlChunk.getText();
+        if (text == null) return "";
+        String[] lines = text.split("\\r?\\n");
+        StringBuilder sb = new StringBuilder();
+        int taken = 0;
+        for (String l : lines) {
+            if (l.trim().isEmpty()) continue;
+            sb.append(l.trim());
+            taken++;
+            if (taken >= 2) break;
+            sb.append(" ");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Create a short snippet of text for display.
+     */
+    private String snippet(String t) {
+        if (t == null) return "";
+        int n = Math.min(120, t.length());
+        return t.substring(0, n).replaceAll("\\r?\\n", " ") + (t.length() > n ? "..." : "");
     }
 
     /**

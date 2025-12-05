@@ -26,4 +26,12 @@ public class Config {
     public static final int PROMPT_MAX_TOKENS = 4096;
     public static final int PROMPT_RESERVED_ANSWER = 400;
     public static final int PROMPT_OVERHEAD = 200;
+
+    // Level-7 / routing
+    public static final double RAG_SCORE_FALLBACK_THRESHOLD = 0.3; // if top cross-encoder score < this, treat as weak evidence
+
+    // Database
+    public static final String DB_URL = "jdbc:postgresql://localhost:5432/learning_db";
+    public static final String DB_USER = "postgres";
+    public static final String DB_PASS = System.getenv("DB_PASS"); // keep as env
 }
