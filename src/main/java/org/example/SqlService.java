@@ -1,7 +1,6 @@
 package org.example;
 
 import java.sql.*;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
@@ -105,7 +104,7 @@ public class SqlService {
                     Map<String,String> r = new LinkedHashMap<>();
                     r.put("assignment_id", String.valueOf(rs.getInt("assignment_id")));
                     r.put("title", rs.getString("title"));
-                    Date d = rs.getDate("due_date");
+                    java.sql.Date d = rs.getDate("due_date");
                     r.put("due_date", d == null ? "" : d.toString());
                     res.add(r);
                 }
