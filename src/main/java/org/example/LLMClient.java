@@ -16,10 +16,10 @@ public class LLMClient {
     private final Gson gson = new Gson();
 
     public LLMClient() {
-        // Set longer timeouts for LLM generation (can take 30+ seconds)
+        // Set longer timeouts for LLM generation (can take 60+ seconds for complex queries)
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(120, TimeUnit.SECONDS)
+                .readTimeout(180, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .build();
     }
