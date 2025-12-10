@@ -31,7 +31,7 @@ services:
       DB_USER: postgres
       DB_PASS: ${DB_PASS}
       QDRANT_URL: http://qdrant:6333
-      LLM_URL: ${LLM_URL:-http://host.docker.internal:8080}
+      LLM_URL: ${LLM_URL:-http://host.docker.internal:8081}
     ports:
       - "8080:8080"
     extra_hosts:
