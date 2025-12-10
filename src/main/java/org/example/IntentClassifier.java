@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  */
 public class IntentClassifier {
 
-    private static final Pattern FACTUAL_PATTERN = Pattern.compile("\\b(when|date|how many|count|which|list|what\\s+is\\s+the\\s+date|earliest|latest|first|last)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern FACTUAL_PATTERN = Pattern.compile("\\b(when|date|how many|count|which|list|what\\s+is\\s+the\\s+date|earliest|latest|first|last|what.*courses|what.*topics|all\\s+courses|all\\s+topics)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern SEMANTIC_PATTERN = Pattern.compile("\\b(why|explain|explanation|compare|recommend|pros|cons|benefit|how\\s+to)\\b", Pattern.CASE_INSENSITIVE);
 
     public enum Intent { FACTUAL, SEMANTIC, MIXED }

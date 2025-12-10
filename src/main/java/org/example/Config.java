@@ -33,5 +33,5 @@ public class Config {
     // Database
     public static final String DB_URL = "jdbc:postgresql://localhost:5432/learning_db";
     public static final String DB_USER = "postgres";
-    public static final String DB_PASS = System.getenv("DB_PASS"); // keep as env
+    public static final String DB_PASS = System.getenv("DB_PASS") != null ? System.getenv("DB_PASS") : "Snikitha05!";
 }

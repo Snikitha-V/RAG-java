@@ -213,54 +213,81 @@ public class RetrievalService {
         DbChunk sqlChunk = null;
 
         if (intent == IntentClassifier.Intent.FACTUAL || intent == IntentClassifier.Intent.MIXED) {
-            // Heuristic: try to extract an entity/token we can send to SQL (topic id, class id, etc.)
-            String topicId = extractTopicIdFromQuery(query);
-            if (topicId != null) {
-                LOG.info("Extracted topicId: {}", topicId);
-                // example factual SQL queries based on user phrasing
-                try {
-                    if (query.toLowerCase().contains("when")) {
-                        Optional<Map<String,String>> range = sql.queryLearnedAtRange(topicId);
-                        if (range.isPresent()) {
-                            String body = sql.sqlDateRangeBody(topicId, range.get());
-                            sqlChunk = sql.buildSqlChunk("learned_range_" + topicId, "SQL_RESULT: learned_at", body);
+            // Check for listing queries first (no topic ID needed)
+            String qLower = query.toLowerCase();
+            try {
+                if (qLower.contains("course") && (qLower.contains("what") || qLower.contains("list") || qLower.contains("all"))) {
+                    List<Map<String,String>> courses = sql.listCourses();
+                    if (!courses.isEmpty()) {
+                        StringBuilder body = new StringBuilder("SQL_RESULT: All Courses\n");
+                        for (Map<String,String> c : courses) {
+                            body.append("- ").append(c.get("code")).append(": ").append(c.get("title")).append("\n");
                         }
-                    } else if (query.toLowerCase().contains("how many") || query.toLowerCase().contains("count")) {
-                        Optional<Integer> cnt = sql.queryCountClassesForTopic(topicId);
-                        if (cnt.isPresent()) {
-                            String body = sql.sqlCountBody(topicId, cnt.get());
-                            sqlChunk = sql.buildSqlChunk("count_classes_" + topicId, "SQL_RESULT: counts", body);
-                        }
+                        sqlChunk = sql.buildSqlChunk("list_courses", "SQL_RESULT: courses", body.toString());
                     }
-                } catch (Exception e) {
-                    // SQL query failed (schema mismatch, etc.) - fall back to RAG
-                    LOG.warn("SQL query failed, falling back to RAG: {}", e.getMessage());
-                    sqlChunk = null;
+                } else if (qLower.contains("topic") && (qLower.contains("what") || qLower.contains("list") || qLower.contains("all"))) {
+                    List<Map<String,String>> topics = sql.listTopics();
+                    if (!topics.isEmpty()) {
+                        StringBuilder body = new StringBuilder("SQL_RESULT: All Topics\n");
+                        for (Map<String,String> t : topics) {
+                            body.append("- ").append(t.get("code")).append(": ").append(t.get("title")).append("\n");
+                        }
+                        sqlChunk = sql.buildSqlChunk("list_topics", "SQL_RESULT: topics", body.toString());
+                    }
                 }
-                // add more SQL cases here as required
+            } catch (Exception e) {
+                LOG.warn("SQL list query failed: {}", e.getMessage());
+            }
+
+            // If no listing match, try topic-based queries
+            if (sqlChunk == null) {
+                String topicId = extractTopicIdFromQuery(query);
+                if (topicId != null) {
+                    LOG.info("Extracted topicId: {}", topicId);
+                    // example factual SQL queries based on user phrasing
+                    try {
+                        if (qLower.contains("when")) {
+                            Optional<Map<String,String>> range = sql.queryLearnedAtRange(topicId);
+                            if (range.isPresent()) {
+                                String body = sql.sqlDateRangeBody(topicId, range.get());
+                                sqlChunk = sql.buildSqlChunk("learned_range_" + topicId, "SQL_RESULT: learned_at", body);
+                            }
+                        } else if (qLower.contains("how many") || qLower.contains("count")) {
+                            Optional<Integer> cnt = sql.queryCountClassesForTopic(topicId);
+                            if (cnt.isPresent()) {
+                                String body = sql.sqlCountBody(topicId, cnt.get());
+                                sqlChunk = sql.buildSqlChunk("count_classes_" + topicId, "SQL_RESULT: counts", body);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // SQL query failed (schema mismatch, etc.) - fall back to RAG
+                        LOG.warn("SQL query failed, falling back to RAG: {}", e.getMessage());
+                        sqlChunk = null;
+                    }
+                    // add more SQL cases here as required
+                }
             }
         }
 
-        // If FACTUAL and we got a SQL result -> return deterministic answer (plus optional context)
+        // If FACTUAL and we got a SQL result -> use SQL data as context for LLM
         if (intent == IntentClassifier.Intent.FACTUAL) {
             if (sqlChunk != null) {
-                // Build a short user-facing deterministic answer from SQL result
-                String deterministicAnswer = extractShortAnswerFromSqlChunk(sqlChunk);
-                // Optionally retrieve a small RAG context to provide explanation
-                List<DbChunk> support = Collections.emptyList();
+                // Use SQL result as primary context, optionally add some RAG context
+                List<DbChunk> context = new ArrayList<>();
+                context.add(sqlChunk);  // Add SQL result as context chunk
+                
+                // Optionally retrieve a small RAG context to provide additional info
                 if (shouldAttachRagContextForFactual()) {
-                    support = retrieveTopContextForQuery(query, 3);
+                    List<DbChunk> ragContext = retrieveTopContextForQuery(query, 3);
+                    context.addAll(ragContext);
                 }
-                // Assemble final output: deterministic answer + context (if any)
-                StringBuilder sb = new StringBuilder();
-                sb.append(deterministicAnswer).append("\n");
-                if (!support.isEmpty()) {
-                    sb.append("\nContext:\n");
-                    for (DbChunk c : support) {
-                        sb.append("- ").append(c.getChunkId()).append(": ").append(snippet(c.getText())).append("\n");
-                    }
-                }
-                return sb.toString();
+                
+                // Pass to LLM to generate natural answer
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                long t0 = System.nanoTime();
+                String ans = llm.generate(prompt, 300);
+                LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+                return ans;
             } else {
                 // No SQL result: fall back to RAG retrieval and only return if evidence strong
                 List<Candidate> candidates = denseRetrieveCandidates(query);

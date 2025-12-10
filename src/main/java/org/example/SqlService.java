@@ -138,4 +138,42 @@ public class SqlService {
     public String sqlCountBody(String topicCode, int cnt) {
         return String.format("SQL_RESULT for topic=%s\nTotal classes: %d\n", topicCode, cnt);
     }
+
+    /**
+     * List all courses from the database.
+     */
+    public List<Map<String,String>> listCourses() throws SQLException {
+        String sql = "SELECT code, title FROM courses ORDER BY code;";
+        try (Connection c = getConn(); PreparedStatement p = c.prepareStatement(sql)) {
+            try (ResultSet rs = p.executeQuery()) {
+                List<Map<String,String>> res = new ArrayList<>();
+                while (rs.next()) {
+                    Map<String,String> r = new LinkedHashMap<>();
+                    r.put("code", rs.getString("code"));
+                    r.put("title", rs.getString("title"));
+                    res.add(r);
+                }
+                return res;
+            }
+        }
+    }
+
+    /**
+     * List all topics from the database.
+     */
+    public List<Map<String,String>> listTopics() throws SQLException {
+        String sql = "SELECT code, title FROM topics ORDER BY code;";
+        try (Connection c = getConn(); PreparedStatement p = c.prepareStatement(sql)) {
+            try (ResultSet rs = p.executeQuery()) {
+                List<Map<String,String>> res = new ArrayList<>();
+                while (rs.next()) {
+                    Map<String,String> r = new LinkedHashMap<>();
+                    r.put("code", rs.getString("code"));
+                    r.put("title", rs.getString("title"));
+                    res.add(r);
+                }
+                return res;
+            }
+        }
+    }
 }
