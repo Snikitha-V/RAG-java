@@ -25,4 +25,16 @@ public class IntentClassifier {
         if (factual) return Intent.FACTUAL;
         return Intent.SEMANTIC;
     }
+
+    /**
+     * Check if query is a simple greeting (no RAG needed).
+     */
+    public static boolean isGreeting(String query) {
+        if (query == null) return false;
+        String q = query.trim().toLowerCase(Locale.ROOT);
+        return q.equals("hi") || q.equals("hello") || q.equals("hey") || q.equals("yo") 
+            || q.equals("hi!") || q.equals("hello!") || q.equals("hey!") 
+            || q.startsWith("hi ") || q.startsWith("hello ") || q.startsWith("hey ")
+            || q.equals("good morning") || q.equals("good afternoon") || q.equals("good evening");
+    }
 }

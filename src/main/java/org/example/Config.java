@@ -33,5 +33,16 @@ public class Config {
     // Database
     public static final String DB_URL = "jdbc:postgresql://localhost:5432/learning_db";
     public static final String DB_USER = "postgres";
-    public static final String DB_PASS = System.getenv("DB_PASS") != null ? System.getenv("DB_PASS") : "Snikitha05!";
+    public static final String DB_PASS = requireEnv("DB_PASS");
+
+    // API Security
+    public static final String API_KEY = System.getenv("API_KEY"); // null means auth disabled
+
+    private static String requireEnv(String name) {
+        String val = System.getenv(name);
+        if (val == null || val.isBlank()) {
+            throw new IllegalStateException("Required environment variable " + name + " is not set");
+        }
+        return val;
+    }
 }

@@ -9,7 +9,17 @@
     .msg { padding:8px; border-radius:6px; margin:6px 0; }
     .user { background:#dff0ff; text-align:right; }
     .bot { background:#f4f4f8; }
-    .meta { color:#666; font-size:12px; }
+    .meta { color:#666; font-size:12px; margin:4px 0; padding:4px 8px; background:#fafafa; border-radius:4px; }
+    .meta-section { margin-top:8px; padding:8px; background:#f0f0f0; border-radius:4px; font-size:12px; }
+    .sql-box { background:#fff8e1; border-left:3px solid #ffc107; padding:8px; margin:4px 0; font-family:monospace; font-size:11px; }
+    .chain-box { background:#e3f2fd; border-left:3px solid #2196f3; padding:8px; margin:4px 0; font-size:11px; display:none; }
+    .why-btn { background:#e0e0e0; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px; margin-left:8px; }
+    .why-btn:hover { background:#d0d0d0; }
+    .confidence { display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px; font-weight:bold; margin-left:8px; }
+    .confidence.high { background:#c8e6c9; color:#2e7d32; }
+    .confidence.medium { background:#fff9c4; color:#f57f17; }
+    .confidence.low { background:#ffcdd2; color:#c62828; }
+    .intent { display:inline-block; padding:2px 6px; border-radius:3px; font-size:10px; background:#e1bee7; color:#7b1fa2; }
     #controls { margin-top:12px; display:flex; gap:8px; }
   </style>
 </head>
@@ -27,6 +37,7 @@
   <script>
     const messages = document.getElementById('messages');
     const queryInput = document.getElementById('query');
+    let chainCounter = 0;
 
     async function sendQuery() {
       const q = queryInput.value.trim();
@@ -44,13 +55,55 @@
         removeThinking();
         if (json.answer) {
           appendMessage(json.answer, 'bot');
-          if (json.sources) appendMeta('Sources: ' + json.sources);
+          
+          // Show metadata
+          let metaHtml = '';
+          
+          // Intent and Confidence badges
+          if (json.intent) {
+            metaHtml += '<span class="intent">' + json.intent + '</span>';
+          }
+          if (json.confidence) {
+            metaHtml += '<span class="confidence ' + json.confidence + '">' + json.confidence.toUpperCase() + '</span>';
+          }
+          
+          // Why button for retrieval chain
+          if (json.retrieval_chain && json.retrieval_chain.length > 0) {
+            chainCounter++;
+            metaHtml += '<button class="why-btn" onclick="toggleChain(' + chainCounter + ')">Why?</button>';
+          }
+          
+          if (metaHtml) {
+            appendMetaHtml(metaHtml);
+          }
+          
+          // Sources
+          if (json.sources && json.sources.length > 0) {
+            appendMeta('Sources: ' + json.sources.join(', '));
+          }
+          
+          // Retrieval chain (hidden by default)
+          if (json.retrieval_chain && json.retrieval_chain.length > 0) {
+            let chainHtml = '<div class="chain-box" id="chain-' + chainCounter + '"><strong>Retrieval Chain:</strong><br>';
+            json.retrieval_chain.forEach((c, i) => {
+              chainHtml += (i+1) + '. ' + c.id + ' (score: ' + (c.score ? c.score.toFixed(3) : 'N/A') + ')<br>';
+            });
+            chainHtml += '</div>';
+            appendMetaHtml(chainHtml);
+          }
         } else {
           appendMessage('No answer', 'bot');
         }
       } catch (e) {
         removeThinking();
         appendMessage('Error: ' + e.message, 'bot');
+      }
+    }
+
+    function toggleChain(id) {
+      const el = document.getElementById('chain-' + id);
+      if (el) {
+        el.style.display = el.style.display === 'none' ? 'block' : 'none';
       }
     }
 
@@ -70,6 +123,12 @@
       const div = document.createElement('div');
       div.className = 'meta';
       div.innerText = text;
+      messages.appendChild(div);
+    }
+    function appendMetaHtml(html) {
+      const div = document.createElement('div');
+      div.className = 'meta';
+      div.innerHTML = html;
       messages.appendChild(div);
     }
 

@@ -200,6 +200,227 @@ public class RetrievalService {
     }
 
     /**
+     * Full RAG pipeline with metadata for UI display.
+     * Returns structured QueryResult with answer, sources, SQL, retrieval chain, etc.
+     */
+    public QueryResult askWithMetadata(String query) throws Exception {
+        QueryResult result = new QueryResult();
+        
+        // 0. Check for greetings first (no RAG needed)
+        if (IntentClassifier.isGreeting(query)) {
+            result.setAnswer("Hello! How can I help you with your learning topics today?");
+            result.setIntent("GREETING");
+            result.setConfidence("high");
+            LOG.info("Query intent: GREETING");
+            return result;
+        }
+        
+        // 1. Setup helpers
+        IntentClassifier.Intent intent = IntentClassifier.classify(query);
+        SqlService sql = new SqlService(Config.DB_URL, Config.DB_USER, Config.DB_PASS);
+        LOG.info("Query intent: {}", intent);
+        result.setIntent(intent.name());
+
+        // Track retrieval chain for "why" display
+        List<Map<String, Object>> retrievalChain = new ArrayList<>();
+        List<String> sourceIds = new ArrayList<>();
+        String sqlText = null;
+
+        // For MIXED: we'll run SQL first to get authoritative facts
+        DbChunk sqlChunk = null;
+
+        if (intent == IntentClassifier.Intent.FACTUAL || intent == IntentClassifier.Intent.MIXED) {
+            // Check for listing queries first (no topic ID needed)
+            String qLower = query.toLowerCase();
+            try {
+                if (qLower.contains("course") && (qLower.contains("what") || qLower.contains("list") || qLower.contains("all"))) {
+                    List<Map<String,String>> courses = sql.listCourses();
+                    if (!courses.isEmpty()) {
+                        StringBuilder body = new StringBuilder("SQL_RESULT: All Courses\n");
+                        for (Map<String,String> c : courses) {
+                            body.append("- ").append(c.get("code")).append(": ").append(c.get("title")).append("\n");
+                        }
+                        sqlChunk = sql.buildSqlChunk("list_courses", "SQL_RESULT: courses", body.toString());
+                        sqlText = "SELECT code, title FROM courses";
+                    }
+                } else if (qLower.contains("topic") && (qLower.contains("what") || qLower.contains("list") || qLower.contains("all"))) {
+                    List<Map<String,String>> topics = sql.listTopics();
+                    if (!topics.isEmpty()) {
+                        StringBuilder body = new StringBuilder("SQL_RESULT: All Topics\n");
+                        for (Map<String,String> t : topics) {
+                            body.append("- ").append(t.get("code")).append(": ").append(t.get("title")).append("\n");
+                        }
+                        sqlChunk = sql.buildSqlChunk("list_topics", "SQL_RESULT: topics", body.toString());
+                        sqlText = "SELECT topic_code, title FROM topics";
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("SQL list query failed: {}", e.getMessage());
+            }
+
+            // If no listing match, try topic-based queries
+            if (sqlChunk == null) {
+                String topicId = extractTopicIdFromQuery(query);
+                if (topicId != null) {
+                    LOG.info("Extracted topicId: {}", topicId);
+                    try {
+                        if (qLower.contains("when")) {
+                            Optional<Map<String,String>> range = sql.queryLearnedAtRange(topicId);
+                            if (range.isPresent()) {
+                                String body = sql.sqlDateRangeBody(topicId, range.get());
+                                sqlChunk = sql.buildSqlChunk("learned_range_" + topicId, "SQL_RESULT: learned_at", body);
+                                sqlText = "SELECT MIN(learned_at), MAX(learned_at) FROM classes WHERE topic_id='" + topicId + "'";
+                            }
+                        } else if (qLower.contains("how many") || qLower.contains("count")) {
+                            Optional<Integer> cnt = sql.queryCountClassesForTopic(topicId);
+                            if (cnt.isPresent()) {
+                                String body = sql.sqlCountBody(topicId, cnt.get());
+                                sqlChunk = sql.buildSqlChunk("count_classes_" + topicId, "SQL_RESULT: counts", body);
+                                sqlText = "SELECT COUNT(*) FROM classes WHERE topic_id='" + topicId + "'";
+                            }
+                        }
+                    } catch (Exception e) {
+                        LOG.warn("SQL query failed, falling back to RAG: {}", e.getMessage());
+                        sqlChunk = null;
+                    }
+                }
+            }
+        }
+
+        result.setSql(sqlText);
+
+        // FACTUAL path
+        if (intent == IntentClassifier.Intent.FACTUAL) {
+            if (sqlChunk != null) {
+                List<DbChunk> context = new ArrayList<>();
+                context.add(sqlChunk);
+                sourceIds.add(sqlChunk.getChunkId());
+                
+                if (shouldAttachRagContextForFactual()) {
+                    List<DbChunk> ragContext = retrieveTopContextForQuery(query, 3);
+                    for (DbChunk c : ragContext) {
+                        sourceIds.add(c.getChunkId());
+                    }
+                    context.addAll(ragContext);
+                }
+                
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                long t0 = System.nanoTime();
+                String ans = llm.generate(prompt, 300);
+                LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+                
+                result.setAnswer(ans);
+                result.setSources(sourceIds);
+                result.setConfidence("high");
+                return result;
+            } else {
+                List<Candidate> candidates = denseRetrieveCandidates(query);
+                for (Candidate c : candidates) {
+                    Map<String, Object> entry = new HashMap<>();
+                    entry.put("id", c.id);
+                    entry.put("score", c.score);
+                    retrievalChain.add(entry);
+                }
+                result.setRetrievalChain(retrievalChain);
+                
+                double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
+                if (topScore < Config.RAG_SCORE_FALLBACK_THRESHOLD) {
+                    result.setAnswer("I don't have that information in your database.");
+                    result.setConfidence("low");
+                    return result;
+                }
+                
+                List<DbChunk> context = retrieve(query);
+                for (DbChunk c : context) sourceIds.add(c.getChunkId());
+                
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                long t0 = System.nanoTime();
+                String ans = llm.generate(prompt, 300);
+                LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+                
+                result.setAnswer(ans);
+                result.setSources(sourceIds);
+                result.setConfidence(topScore > 0.7 ? "high" : "medium");
+                return result;
+            }
+        }
+
+        // SEMANTIC path
+        if (intent == IntentClassifier.Intent.SEMANTIC) {
+            List<Candidate> candidates = denseRetrieveCandidates(query);
+            for (Candidate c : candidates) {
+                Map<String, Object> entry = new HashMap<>();
+                entry.put("id", c.id);
+                entry.put("score", c.score);
+                retrievalChain.add(entry);
+            }
+            result.setRetrievalChain(retrievalChain);
+            
+            List<DbChunk> context = retrieve(query);
+            for (DbChunk c : context) sourceIds.add(c.getChunkId());
+            
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            long t0 = System.nanoTime();
+            String ans = llm.generate(prompt, 300);
+            LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+            
+            double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
+            result.setAnswer(ans);
+            result.setSources(sourceIds);
+            result.setConfidence(topScore > 0.7 ? "high" : topScore > 0.4 ? "medium" : "low");
+            return result;
+        }
+
+        // MIXED path
+        if (intent == IntentClassifier.Intent.MIXED) {
+            List<Candidate> candidates = denseRetrieveCandidates(query);
+            for (Candidate c : candidates) {
+                Map<String, Object> entry = new HashMap<>();
+                entry.put("id", c.id);
+                entry.put("score", c.score);
+                retrievalChain.add(entry);
+            }
+            result.setRetrievalChain(retrievalChain);
+            
+            List<DbChunk> context = retrieve(query);
+            if (sqlChunk != null) {
+                List<DbChunk> merged = new ArrayList<>();
+                merged.add(sqlChunk);
+                sourceIds.add(sqlChunk.getChunkId());
+                merged.addAll(context);
+                context = merged;
+            }
+            for (DbChunk c : context) {
+                if (!sourceIds.contains(c.getChunkId())) sourceIds.add(c.getChunkId());
+            }
+            
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            long t0 = System.nanoTime();
+            String ans = llm.generate(prompt, 300);
+            LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+            
+            result.setAnswer(ans);
+            result.setSources(sourceIds);
+            result.setConfidence(sqlChunk != null ? "high" : "medium");
+            return result;
+        }
+
+        // Default fallback
+        List<DbChunk> context = retrieve(query);
+        for (DbChunk c : context) sourceIds.add(c.getChunkId());
+        
+        String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+        long t0 = System.nanoTime();
+        String ans = llm.generate(prompt, 300);
+        LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+        
+        result.setAnswer(ans);
+        result.setSources(sourceIds);
+        result.setConfidence("medium");
+        return result;
+    }
+
+    /**
      * Full RAG pipeline with Level-7 routing: intent classification, SQL for factual,
      * RAG for semantic, hybrid for mixed queries.
      */
