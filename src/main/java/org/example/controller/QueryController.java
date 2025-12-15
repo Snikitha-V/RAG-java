@@ -36,7 +36,7 @@ public class QueryController {
         return null; // valid
     }
 
-    // Basic query endpoint: POST { "query": "...", "session_id": "..." }
+    // Basic query endpoint: POST { "query": "..." }
     @PostMapping("/query")
     public ResponseEntity<?> query(
             @RequestHeader(value = "x-api-key", required = false) String apiKey,
@@ -47,19 +47,16 @@ public class QueryController {
         if (authError != null) return authError;
         try {
             String q = body.getOrDefault("query", "");
-            String sessionId = body.getOrDefault("session_id", null);
             
-            // Call retrieval service with metadata
+            // Call retrieval service with full pipeline
             QueryResult result = retrievalService.askWithMetadata(q);
             
             // Build structured response
             Map<String, Object> payload = new HashMap<>();
             payload.put("answer", result.getAnswer());
             payload.put("sources", result.getSources());
-            payload.put("sql", result.getSql());
             payload.put("retrieval_chain", result.getRetrievalChain());
             payload.put("confidence", result.getConfidence());
-            payload.put("intent", result.getIntent());
             
             return ResponseEntity.ok(payload);
         } catch (Exception e) {

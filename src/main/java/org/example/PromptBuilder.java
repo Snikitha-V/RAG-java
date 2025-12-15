@@ -95,6 +95,73 @@ public class PromptBuilder {
         return prompt.toString();
     }
 
+    /**
+     * Build a more lenient prompt used for low-confidence semantic fallbacks.
+     * This prompt asks the model to provide a best-effort answer based on the evidence
+     * and to explicitly mark uncertainty, while still avoiding invented facts.
+     */
+    public String buildLenientPrompt(List<DbChunk> contextChunks, String userQuestion, int contextK) {
+        // reuse evidence assembly same as buildPrompt
+        int available = maxTotalTokens - reservedForAnswer - overheadTokens;
+        int used = 0;
+        StringBuilder evidence = new StringBuilder();
+        int included = 0;
+
+        for (DbChunk c : contextChunks) {
+            if (included >= contextK) break;
+            String header = String.format("[CHUNK id=%s type=%s]\n", c.getChunkId(), safeType(c.getChunkType()));
+            String body = c.getText() == null ? "" : c.getText();
+            int headerTok = tokenizer.countTokens(header);
+            int bodyTok = tokenizer.countTokens(body);
+            if (used + headerTok + bodyTok <= available) {
+                evidence.append(header).append(body).append("\n[/CHUNK]\n\n");
+                used += headerTok + bodyTok;
+                included++;
+            } else {
+                int remainingTokens = Math.max(0, available - used - headerTok);
+                int charBudget = Math.max(80, remainingTokens * 4);
+                String trimmed = tokenizer.truncateHeadTailPreserveFacts(body, charBudget);
+                int trimmedTok = tokenizer.countTokens(trimmed);
+                if (trimmedTok + headerTok <= (available - used) && trimmed.length() > 0) {
+                    evidence.append(header).append(trimmed).append("\n[/CHUNK]\n\n");
+                    used += headerTok + trimmedTok;
+                    included++;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if (included == 0) {
+            if (!contextChunks.isEmpty()) {
+                DbChunk c = contextChunks.get(0);
+                String header = String.format("[CHUNK id=%s type=%s]\n", c.getChunkId(), safeType(c.getChunkType()));
+                String trimmed = tokenizer.truncateHeadTailPreserveFacts(c.getText(), 512);
+                evidence.append(header).append(trimmed).append("\n[/CHUNK]\n\n");
+            }
+        }
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("[SYSTEM]\n")
+              .append("You are an assistant. Use the evidence below to answer the user's question. If the evidence is incomplete, provide a best-effort answer but clearly mark uncertainty (e.g., 'I think', 'This is likely'). Do not invent facts.\n\n")
+              .append("[EVIDENCE]\n")
+              .append(evidence.toString())
+              .append("[USER QUESTION]\n")
+              .append(userQuestion).append("\n\n")
+              .append("[INSTRUCTIONS]\n")
+              .append("1. Answer concisely (1–3 sentences).\n")
+              .append("2. Base every factual claim only on the evidence above. If uncertain, explicitly state the uncertainty.\n")
+              .append("3. If you state a fact present in the evidence, append the source bracket(s) for that fact: [source: <CHUNK_ID>].\n")
+              .append("4. Avoid inventing new dates, numbers or facts; if a fact is missing, qualify it rather than fabricating it.\n\n")
+              .append("[OUTPUT FORMAT]\n")
+              .append("Answer: <one paragraph (1–3 sentences)>\n")
+              .append("Sources: <comma-separated CHUNK_IDs used>\n")
+              .append("Optional SQL: <SQL snippet or \"N/A\">\n\n")
+              .append("[END]\n");
+
+        return prompt.toString();
+    }
+
     private String safeType(String t) {
         return t == null ? "unknown" : t.replaceAll("\\s+", "_");
     }

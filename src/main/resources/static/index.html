@@ -59,10 +59,7 @@
           // Show metadata
           let metaHtml = '';
           
-          // Intent and Confidence badges
-          if (json.intent) {
-            metaHtml += '<span class="intent">' + json.intent + '</span>';
-          }
+          // Confidence badge
           if (json.confidence) {
             metaHtml += '<span class="confidence ' + json.confidence + '">' + json.confidence.toUpperCase() + '</span>';
           }

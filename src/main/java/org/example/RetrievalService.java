@@ -200,6 +200,59 @@ public class RetrievalService {
     }
 
     /**
+     * RAG-only pipeline (no SQL) for comparison testing.
+     * Uses pure semantic retrieval regardless of intent.
+     */
+    public QueryResult askRagOnly(String query) throws Exception {
+        QueryResult result = new QueryResult();
+        
+        // Check for greetings first
+        if (IntentClassifier.isGreeting(query)) {
+            result.setAnswer("Hello! How can I help you with your learning topics today?");
+            result.setIntent("GREETING");
+            result.setConfidence("high");
+            LOG.info("Query intent: GREETING (rag-only mode)");
+            return result;
+        }
+        
+        LOG.info("RAG-ONLY mode: skipping SQL, using pure semantic retrieval");
+        result.setIntent("RAG-ONLY");
+        
+        // Track retrieval chain
+        List<Map<String, Object>> retrievalChain = new ArrayList<>();
+        List<String> sourceIds = new ArrayList<>();
+        
+        // Run dense + BM25 + cross-encoder (full RAG pipeline, no SQL)
+        List<Candidate> candidates = denseRetrieveCandidates(query);
+        for (Candidate c : candidates) {
+            Map<String, Object> entry = new HashMap<>();
+            entry.put("id", c.id);
+            entry.put("score", c.score);
+            retrievalChain.add(entry);
+        }
+        result.setRetrievalChain(retrievalChain);
+        
+        double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
+        
+        // Retrieve context using full hybrid pipeline
+        List<DbChunk> context = retrieve(query);
+        for (DbChunk c : context) sourceIds.add(c.getChunkId());
+        
+        // Generate answer with LLM
+        String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+        long t0 = System.nanoTime();
+        String ans = llm.generate(prompt, 300);
+        LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+        
+        result.setAnswer(ans);
+        result.setSources(sourceIds);
+        result.setConfidence(topScore > 0.7 ? "high" : topScore > 0.4 ? "medium" : "low");
+        result.setSql(null); // No SQL in rag-only mode
+        
+        return result;
+    }
+
+    /**
      * Full RAG pipeline with metadata for UI display.
      * Returns structured QueryResult with answer, sources, SQL, retrieval chain, etc.
      */
@@ -291,24 +344,37 @@ public class RetrievalService {
 
         // FACTUAL path
         if (intent == IntentClassifier.Intent.FACTUAL) {
-            if (sqlChunk != null) {
-                List<DbChunk> context = new ArrayList<>();
-                context.add(sqlChunk);
+                if (sqlChunk != null) {
+                // Treat SQL chunk as a retrievable candidate: prepend it to RAG context
+                // and run cross-encoder reranking so SQL gets ranked among semantic results.
                 sourceIds.add(sqlChunk.getChunkId());
-                
+
+                List<DbChunk> context;
                 if (shouldAttachRagContextForFactual()) {
-                    List<DbChunk> ragContext = retrieveTopContextForQuery(query, 3);
-                    for (DbChunk c : ragContext) {
-                        sourceIds.add(c.getChunkId());
-                    }
-                    context.addAll(ragContext);
+                    // Pull a larger RAG context to rerank with SQL chunk
+                    List<DbChunk> ragContext = retrieveTopContextForQuery(query, Math.max(Config.RERANK_TOP_N, 3));
+                    List<DbChunk> merged = new ArrayList<>();
+                    merged.add(sqlChunk);
+                    merged.addAll(ragContext);
+
+                    // Score with cross-encoder and sort
+                    Map<String, Float> rerankScores = crossEncoder.scoreBatch(query, merged);
+                    merged.sort((a,b) -> Float.compare(rerankScores.getOrDefault(b.getChunkId(), 0f), rerankScores.getOrDefault(a.getChunkId(), 0f)));
+
+                    // Pick final top-k context
+                    context = merged.stream().limit(Config.CONTEXT_K).collect(Collectors.toList());
+                    for (DbChunk c : context) sourceIds.add(c.getChunkId());
+                } else {
+                    // No RAG context requested: just use SQL chunk
+                    context = new ArrayList<>();
+                    context.add(sqlChunk);
                 }
-                
+
                 String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
                 long t0 = System.nanoTime();
                 String ans = llm.generate(prompt, 300);
                 LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
-                
+
                 result.setAnswer(ans);
                 result.setSources(sourceIds);
                 result.setConfidence("high");
@@ -325,19 +391,33 @@ public class RetrievalService {
                 
                 double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
                 if (topScore < Config.RAG_SCORE_FALLBACK_THRESHOLD) {
-                    result.setAnswer("I don't have that information in your database.");
+                    // Borderline / low semantic evidence: rather than a terse "don't have it",
+                    // generate a RAG-based answer but mark it as low confidence and include a disclaimer.
+                    List<DbChunk> ctx = retrieve(query);
+                    for (DbChunk c : ctx) sourceIds.add(c.getChunkId());
+
+                    String prompt = promptBuilder.buildLenientPrompt(ctx, query, Config.CONTEXT_K);
+                    long t0 = System.nanoTime();
+                    String ans = llm.generate(prompt, 300);
+                    LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+
+                    String finalAns = "I couldn't find a matching authoritative record in your database. " +
+                                      "Based on semantic evidence (low confidence), here is what I found:\n\n" + ans;
+                    result.setAnswer(finalAns);
+                    result.setSources(sourceIds);
                     result.setConfidence("low");
+                    result.setRetrievalChain(retrievalChain);
                     return result;
                 }
-                
+
                 List<DbChunk> context = retrieve(query);
                 for (DbChunk c : context) sourceIds.add(c.getChunkId());
-                
+
                 String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
                 long t0 = System.nanoTime();
                 String ans = llm.generate(prompt, 300);
                 LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
-                
+
                 result.setAnswer(ans);
                 result.setSources(sourceIds);
                 result.setConfidence(topScore > 0.7 ? "high" : "medium");
@@ -514,7 +594,13 @@ public class RetrievalService {
                 List<Candidate> candidates = denseRetrieveCandidates(query);
                 double topScore = candidates.isEmpty() ? 0.0 : candidates.get(0).score;
                 if (topScore < Config.RAG_SCORE_FALLBACK_THRESHOLD) {
-                    return "I don't have that information in your database.";
+                    // Low semantic evidence: produce a best-effort RAG answer with disclaimer (lenient prompt)
+                    List<DbChunk> ctx = retrieve(query);
+                    String prompt = promptBuilder.buildLenientPrompt(ctx, query, Config.CONTEXT_K);
+                    long t0 = System.nanoTime();
+                    String ans = llm.generate(prompt, 300);
+                    LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
+                    return "I couldn't find a matching authoritative record in your database. Based on semantic evidence (low confidence), here is what I found:\n\n" + ans;
                 }
                 // else run full RAG pipeline to generate explanation
                 List<DbChunk> context = retrieve(query);
@@ -539,12 +625,18 @@ public class RetrievalService {
         // If MIXED: we have SQL chunk (may be null if extraction failed)
         if (intent == IntentClassifier.Intent.MIXED) {
             List<DbChunk> context = retrieve(query);
-            // insert SQL chunk at top if exists
+            // insert SQL chunk and rerank with cross-encoder if it exists
             if (sqlChunk != null) {
                 List<DbChunk> merged = new ArrayList<>();
                 merged.add(sqlChunk);
                 merged.addAll(context);
-                context = merged;
+
+                // Score merged set with cross-encoder and sort
+                Map<String, Float> rerankScores = crossEncoder.scoreBatch(query, merged);
+                merged.sort((a,b) -> Float.compare(rerankScores.getOrDefault(b.getChunkId(), 0f), rerankScores.getOrDefault(a.getChunkId(), 0f)));
+
+                // Limit to final rerank size (then promptBuilder will trim to CONTEXT_K)
+                context = merged.stream().limit(Math.max(Config.RERANK_FINAL_N, Config.CONTEXT_K)).collect(Collectors.toList());
             }
             String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
             long t0 = System.nanoTime();
