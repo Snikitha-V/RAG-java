@@ -3,12 +3,13 @@ package org.example.controller;
 import org.example.RetrievalService;
 import org.example.QueryResult;
 import org.example.Config;
+import org.example.dto.QueryRequest;
+import org.example.dto.QueryResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.beans.factory.annotation.*;
 
 import java.util.Map;
-import java.util.HashMap;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -36,32 +37,44 @@ public class QueryController {
         return null; // valid
     }
 
-    // Basic query endpoint: POST { "query": "..." }
+    /**
+     * Canonical query endpoint.
+     * POST /api/v1/query
+     * Request:  { "query": "..." }
+     * Response: QueryResponse with answer, intent, route, confidence, latencyMs, sources, retrievalChain, sql
+     */
     @PostMapping("/query")
     public ResponseEntity<?> query(
             @RequestHeader(value = "x-api-key", required = false) String apiKey,
-            @RequestBody Map<String,String> body) {
-        
+            @RequestBody QueryRequest request) {
+
         // Check API key
         ResponseEntity<?> authError = validateApiKey(apiKey);
         if (authError != null) return authError;
+
+        long start = System.currentTimeMillis();
         try {
-            String q = body.getOrDefault("query", "");
-            
+            String q = request.getQuery();
+            if (q == null || q.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "query must not be blank"));
+            }
+
             // Call retrieval service with full pipeline
             QueryResult result = retrievalService.askWithMetadata(q);
-            
-            // Build structured response
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("answer", result.getAnswer());
-            payload.put("sources", result.getSources());
-            payload.put("retrieval_chain", result.getRetrievalChain());
-            payload.put("confidence", result.getConfidence());
-            
-            return ResponseEntity.ok(payload);
+
+            long latencyMs = System.currentTimeMillis() - start;
+
+            // Build canonical response DTO
+            QueryResponse response = QueryResponse.from(result, latencyMs);
+
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(500).body(Map.of("error", e.getMessage()));
+            long latencyMs = System.currentTimeMillis() - start;
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", e.getMessage(),
+                    "latencyMs", latencyMs
+            ));
         }
     }
 

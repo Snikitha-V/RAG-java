@@ -1,13 +1,16 @@
 package org.example;
 
 public class Config {
-    // Qdrant
-    public static final String QDRANT_URL = System.getProperty("qdrant.url", "http://localhost:6333");
-    public static final String QDRANT_COLLECTION = System.getProperty("qdrant.collection", "learning_chunks");
+    // Qdrant - use ENV var, fallback to localhost for local dev
+    public static final String QDRANT_URL = getEnvOrDefault("QDRANT_URL", "http://localhost:6333");
+    public static final String QDRANT_COLLECTION = getEnvOrDefault("QDRANT_COLLECTION", "learning_chunks");
 
-    // ONNX / models
-    public static final String EMBED_MODEL_PATH = System.getProperty("model.path", "C:\\Users\\sniki\\rag_learning_project\\rag-learning\\models\\all-mpnet-base-v2-onnx");
-    public static final String CROSS_ENCODER_ONNX_DIR = System.getProperty("cross.encoder.path", "C:\\Users\\sniki\\rag_learning_project\\rag-learning\\models\\cross-encoder-ms-marco-miniLM-L-6-v2");
+    // ONNX / models - use ENV var, fallback to relative paths for Docker
+    public static final String EMBED_MODEL_PATH = getEnvOrDefault("EMBED_MODEL_PATH", "models/all-mpnet-base-v2-onnx");
+    public static final String CROSS_ENCODER_ONNX_DIR = getEnvOrDefault("CROSS_ENCODER_PATH", "models/cross-encoder-ms-marco-miniLM-L-6-v2");
+
+    // LLM server
+    public static final String LLM_URL = getEnvOrDefault("LLM_URL", "http://localhost:8081");
 
     // retrieval params
     public static final int TOPK_DENSE = 100;
@@ -20,7 +23,7 @@ public class Config {
     public static final int QDRANT_EF = 200;
 
     // Lucene index dir
-    public static final String LUCENE_INDEX_DIR = "lucene_index";
+    public static final String LUCENE_INDEX_DIR = getEnvOrDefault("LUCENE_INDEX_DIR", "lucene_index");
 
     // Prompt token budget
     public static final int PROMPT_MAX_TOKENS = 4096;
@@ -28,15 +31,20 @@ public class Config {
     public static final int PROMPT_OVERHEAD = 200;
 
     // Level-7 / routing
-    public static final double RAG_SCORE_FALLBACK_THRESHOLD = 0.3; // if top cross-encoder score < this, treat as weak evidence
+    public static final double RAG_SCORE_FALLBACK_THRESHOLD = 0.3;
 
-    // Database
-    public static final String DB_URL = "jdbc:postgresql://localhost:5432/learning_db";
-    public static final String DB_USER = "postgres";
+    // Database - use ENV vars, fallback to localhost for local dev
+    public static final String DB_URL = getEnvOrDefault("DB_URL", "jdbc:postgresql://localhost:5432/learning_db");
+    public static final String DB_USER = getEnvOrDefault("DB_USER", "postgres");
     public static final String DB_PASS = requireEnv("DB_PASS");
 
     // API Security
     public static final String API_KEY = System.getenv("API_KEY"); // null means auth disabled
+
+    private static String getEnvOrDefault(String name, String defaultValue) {
+        String val = System.getenv(name);
+        return (val != null && !val.isBlank()) ? val : defaultValue;
+    }
 
     private static String requireEnv(String name) {
         String val = System.getenv(name);

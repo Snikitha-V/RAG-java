@@ -16,7 +16,7 @@ public class LLMClient {
     private final Gson gson = new Gson();
 
     public LLMClient() {
-        this("http://localhost:8081");
+        this(Config.LLM_URL);
     }
 
     public LLMClient(String baseUrl) {

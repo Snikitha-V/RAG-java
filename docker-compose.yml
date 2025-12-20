@@ -1,5 +1,26 @@
-version: "3.8"
+version: "3.9"
+
 services:
+  rag-api:
+    image: snikitha/rag-java-app:1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+      - qdrant
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/learning_db
+      DB_USER: postgres
+      DB_PASS: ${DB_PASS}
+      QDRANT_URL: http://qdrant:6333
+      LLM_URL: ${LLM_URL:-http://host.docker.internal:8081}
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   postgres:
     image: postgres:15
     environment:
@@ -17,27 +38,8 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - qdrant_storage:/qdrant/storage
-    environment:
-      QDRANT__SERVICE__AUTOSAVE: "true"
-
-  java-app:
-    image: rag-java-app:latest
-    depends_on:
-      - postgres
-      - qdrant
-    environment:
-      DB_URL: jdbc:postgresql://postgres:5432/learning_db
-      DB_USER: postgres
-      DB_PASS: ${DB_PASS}
-      QDRANT_URL: http://qdrant:6333
-      LLM_URL: ${LLM_URL:-http://host.docker.internal:8081}
-    ports:
-      - "8080:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    restart: unless-stopped
+      - qdrant_data:/qdrant/storage
 
 volumes:
   pgdata:
-  qdrant_storage:
+  qdrant_data:

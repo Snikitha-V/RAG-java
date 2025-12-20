@@ -217,6 +217,17 @@ async function sendQuery() {
     const meta = document.createElement('div');
     meta.className = 'meta-row';
 
+    // Route badge (SQL / RAG / MIXED)
+    if (json.route) {
+      const r = document.createElement('span');
+      r.className = 'badge route';
+      r.style.background = json.route === 'SQL' ? '#bbdefb' : json.route === 'RAG' ? '#e1bee7' : '#ffe0b2';
+      r.style.color = '#333';
+      r.innerText = json.route;
+      meta.appendChild(r);
+    }
+
+    // Confidence badge
     if (json.confidence) {
       const c = document.createElement('span');
       c.className = 'badge confidence ' + json.confidence;
@@ -224,7 +235,27 @@ async function sendQuery() {
       meta.appendChild(c);
     }
 
-    if (json.retrieval_chain?.length) {
+    // Intent badge
+    if (json.intent) {
+      const i = document.createElement('span');
+      i.className = 'badge intent';
+      i.style.background = '#e0e0e0';
+      i.style.color = '#555';
+      i.innerText = json.intent;
+      meta.appendChild(i);
+    }
+
+    // Latency
+    if (json.latencyMs !== undefined) {
+      const l = document.createElement('span');
+      l.className = 'badge latency';
+      l.style.background = '#f5f5f5';
+      l.style.color = '#888';
+      l.innerText = json.latencyMs + 'ms';
+      meta.appendChild(l);
+    }
+
+    if (json.retrievalChain?.length) {
       chainId++;
       const btn = document.createElement('button');
       btn.className = 'why';
@@ -245,11 +276,11 @@ async function sendQuery() {
       card.appendChild(s);
     }
 
-    if (json.retrieval_chain?.length) {
+    if (json.retrievalChain?.length) {
       const chain = document.createElement('div');
       chain.className = 'chain';
       chain.id = 'chain-' + chainId;
-      json.retrieval_chain.forEach((c,i)=>{
+      json.retrievalChain.forEach((c,i)=>{
         chain.innerHTML += `${i+1}. ${c.id} (score: ${c.score?.toFixed(3) ?? 'N/A'})<br>`;
       });
       card.appendChild(chain);
