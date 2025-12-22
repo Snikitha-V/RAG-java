@@ -1,0 +1,19 @@
+# Ignore llama server and GGUF models (LLM runs on host, not in container)
+llama/
+models/mistral-7b-instruct/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Build artifacts (except what we need)
+target/*.original
+
+# Temp files
+*.log
+temp_*
