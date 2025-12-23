@@ -4,7 +4,9 @@ A Retrieval-Augmented Generation (RAG) application for learning management, comb
 
 ## Overview
 
-This is a **monolithic Spring Boot application** that implements a hybrid RAG system with:
+This is a **microservice application** built with Spring Boot that implements a hybrid RAG system. It's independently deployable, owns a single business capability (retrieval-augmented generation), and exposes a unified API for querying.
+
+Key components:
 - **PostgreSQL**: Store learning chunks, courses, topics, classes, and assignments
 - **Qdrant**: Vector database for semantic similarity search with embeddings
 - **Mistral 7B LLM**: Generate intelligent responses using retrieved context
