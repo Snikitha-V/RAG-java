@@ -144,7 +144,7 @@ This starts:
 
 **Environment Variables:**
 ```bash
-export DB_PASS="Snikitha05!"  # PostgreSQL password
+export DB_PASS="your_postgres_password"  # Set your PostgreSQL password
 ```
 
 Access the application: `http://localhost:8080`
@@ -156,8 +156,8 @@ If you already have PostgreSQL and Qdrant running in Docker:
 ```bash
 cd rag-learning
 
-# Set database password
-export DB_PASS="Snikitha05!"
+# Set database password (use your own)
+export DB_PASS="your_postgres_password"
 
 # Build and run Spring Boot app
 mvn clean compile
@@ -178,7 +178,7 @@ mvn clean package -DskipTests
 docker-compose up -d
 
 # Run the JAR with environment variables
-export DB_PASS="Snikitha05!"
+export DB_PASS="your_postgres_password"
 java -jar target/rag-learning-1.0-SNAPSHOT.jar
 ```
 
@@ -279,8 +279,8 @@ This uploads 305 vectors to Qdrant's `learning_chunks` collection.
 DB_HOST=localhost              # PostgreSQL host
 DB_PORT=5432                   # PostgreSQL port
 DB_NAME=learning_db            # Database name
-DB_USER=postgres               # PostgreSQL user
-DB_PASS=Snikitha05!           # PostgreSQL password (REQUIRED)
+DB_USER=postgres                 # PostgreSQL user
+DB_PASS=your_postgres_password  # PostgreSQL password (REQUIRED)
 
 QDRANT_HOST=localhost          # Qdrant host
 QDRANT_PORT=6333              # Qdrant port
