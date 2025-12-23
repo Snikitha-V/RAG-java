@@ -10,24 +10,113 @@ This is a **Spring Boot application** (NOT a microservice) that implements a hyb
 - **Mistral 7B LLM**: Generate intelligent responses using retrieved context
 - **Hybrid Retrieval**: Combines SQL queries for structured data + vector search for semantic matching
 
-## Architecture
+## Architecture & Retrieval Pipelines
 
+### Overall Flow
 ```
 User Request
     ↓
 Spring Boot API (Port 8080)
     ↓
 Intent Classifier (FACTUAL/SEMANTIC/MIXED)
-    ↓
-Hybrid Retrieval Service:
-  ├─ SQL Query (PostgreSQL) → Structured data
-  ├─ Vector Search (Qdrant) → Semantic chunks
-  └─ Cross-Encoder Reranking → Best results
+    ├─→ FACTUAL Pipeline
+    ├─→ SEMANTIC Pipeline  
+    └─→ MIXED Pipeline
     ↓
 Prompt Builder + LLM Generation (Mistral 7B)
     ↓
 JSON Response with Answer + Sources
 ```
+
+### SEMANTIC Query Pipeline (RAG Only)
+For queries like "What are the main topics in Machine Learning?" or "Describe each course"
+```
+SEMANTIC Query
+    ↓
+1. EMBEDDING (ONNX all-mpnet-base-v2, 768 dims)
+    ↓
+2. DENSE RETRIEVAL (Qdrant vector search, top-40)
+    ↓
+3. BM25 LEXICAL SEARCH (Lucene index, top-20)
+    ├─ Merges both results by chunk_id
+    └─ Deduplicates, fetches missing vectors
+    ↓
+4. MMR RERANKING (Max Marginal Relevance for diversity)
+    ↓
+5. CROSS-ENCODER RERANKING (ONNX ms-marco-miniLM, top-10)
+    └─ Semantic scoring + sorting by relevance
+    ↓
+6. CONTEXT ASSEMBLY (top 5 chunks)
+    ↓
+7. LLM GENERATION (Mistral 7B, via llama-server:8081)
+    ↓
+Answer + Sources
+```
+
+### FACTUAL Query Pipeline (SQL + RAG)
+For queries like "List all courses" or "How many topics are there?"
+```
+FACTUAL Query
+    ↓
+1. SQL EXECUTION (PostgreSQL direct query)
+    ├─ Extracts structured data (courses, topics, classes)
+    └─ Returns authoritative results
+    ↓
+2. OPTIONAL RAG CONTEXT (enhance with semantic chunks)
+    ├─ EMBEDDING (ONNX)
+    ├─ DENSE RETRIEVAL (Qdrant)
+    ├─ BM25 LEXICAL SEARCH (Lucene)
+    ├─ MERGE & DEDUPE
+    ├─ MMR RERANKING
+    └─ CROSS-ENCODER RERANKING
+    ↓
+3. CONTEXT ASSEMBLY (SQL results + RAG context)
+    ↓
+4. LLM GENERATION (combines authoritative SQL with supporting RAG evidence)
+    ↓
+Answer + Sources (marked as SQL or RAG)
+```
+
+### MIXED Query Pipeline (Intent-based routing)
+For queries like "When did I learn about supervised learning?"
+```
+MIXED Query
+    ↓
+1. DETECT INTENT (time-based, requires both SQL metadata + semantic search)
+    ↓
+2. SQL EXECUTION (get classes with learned_at timestamps)
+    ↓
+3. SEMANTIC RETRIEVAL (same as SEMANTIC pipeline)
+    ├─ Dense + BM25 + Merge + MMR + Cross-Encoder
+    └─ Find relevant topic/class information
+    ↓
+4. COMBINE RESULTS (metadata + semantic match)
+    ↓
+5. LLM GENERATION (with full context)
+    ↓
+Answer + Sources
+```
+
+### Hybrid Retrieval Details (Dense + BM25)
+The system uses **two complementary search methods**:
+
+**Dense Retrieval (Qdrant)**
+- Semantic similarity search
+- Uses query embedding vector
+- Returns top 40 candidates based on cosine similarity
+- Effective for: understanding context, meaning, relationships
+
+**BM25 Lexical Search (Lucene)**
+- Keyword/term frequency matching
+- Searches inverted index built from chunk text
+- Returns top 20 candidates based on term relevance
+- Effective for: exact phrase matching, technical terms, direct matches
+
+**Merging Strategy**
+- Combines results by chunk_id (deduplicates)
+- Preserves both dense and lexical scores
+- MMR algorithm selects diverse + relevant results
+- Cross-encoder provides final semantic scoring
 
 ## Prerequisites
 
