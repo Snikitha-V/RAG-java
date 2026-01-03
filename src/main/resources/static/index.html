@@ -189,7 +189,16 @@ function removeThinking() {
 }
 
 // Allow overriding the API base via URL param `?api_base=` (empty = same-origin)
-const API_BASE = (new URLSearchParams(window.location.search).get('api_base') || '').replace(/\/$/, '');
+// Default to gateway on port 3000 for conversation memory support
+const defaultGateway = window.location.port === '3000' ? '' : 'http://localhost:3000';
+const API_BASE = (new URLSearchParams(window.location.search).get('api_base') ?? defaultGateway).replace(/\/$/, '');
+
+// Generate or retrieve session ID for conversation memory
+let SESSION_ID = sessionStorage.getItem('rag_session_id');
+if (!SESSION_ID) {
+  SESSION_ID = 'sess-' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+  sessionStorage.setItem('rag_session_id', SESSION_ID);
+}
 
 async function sendQuery() {
   const q = queryInput.value.trim();
@@ -202,7 +211,10 @@ async function sendQuery() {
   try {
     const res = await fetch((API_BASE ? API_BASE : '') + '/api/v1/query', {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{
+        'Content-Type':'application/json',
+        'X-Session-Id': SESSION_ID
+      },
       body:JSON.stringify({query:q})
     });
 
@@ -257,6 +269,15 @@ async function sendQuery() {
       s.className = 'sources';
       s.innerText = 'Sources: ' + json.sources.join(', ');
       card.appendChild(s);
+    }
+
+    // Show conversation context if available (from gateway)
+    if (json.context?.active_entity) {
+      const ctx = document.createElement('div');
+      ctx.className = 'sources';
+      ctx.style.color = '#3f51b5';
+      ctx.innerText = '💬 Context: ' + json.context.active_entity + (json.context.entity_type ? ' (' + json.context.entity_type + ')' : '');
+      card.appendChild(ctx);
     }
 
     if (json.retrievalChain?.length) {

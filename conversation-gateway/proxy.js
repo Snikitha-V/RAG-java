@@ -12,6 +12,10 @@ const QDRANT = process.env.QDRANT_URL || 'http://localhost:6333';
 const COLLECTION = process.env.QDRANT_COLLECTION || 'learning_chunks';
 const SESSION_TTL_SEC = parseInt(process.env.SESSION_TTL_SEC || '900', 10); // 15 min
 
+const MEMORY_MAX_PAIRS = parseInt(process.env.MEMORY_MAX_PAIRS || '3', 10); // max user/assistant turns
+const MEMORY_MAX_ENTRY_CHARS = parseInt(process.env.MEMORY_MAX_ENTRY_CHARS || '800', 10);
+const HISTORY_ENTRY_LIMIT = MEMORY_MAX_PAIRS * 2;
+
 // payload cache config
 // Simple in-memory LRU with TTL to avoid an external dependency; small and deterministic.
 class SimpleLRU {
@@ -51,6 +55,16 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
+// CORS for browser access from different ports (e.g., 8080 -> 3000)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-Session-Id, X-Api-Key');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Session store: use Redis when REDIS_URL set, else in-memory
 const REDIS_URL = process.env.REDIS_URL || null;
 let redis = null;
@@ -61,7 +75,7 @@ if (REDIS_URL) {
 const sessions = new Map();
 
 function makeSessionLocal() {
-  return { state: { active_entity_id: null, active_entity_type: null, active_entity_name: null }, expiresAt: Date.now() + SESSION_TTL_SEC * 1000 };
+  return { state: { active_entity_id: null, active_entity_type: null, active_entity_name: null, history: [] }, expiresAt: Date.now() + SESSION_TTL_SEC * 1000 };
 }
 
 async function getSession(req, res) {
@@ -77,15 +91,18 @@ async function getSession(req, res) {
     const raw = await redis.get(key);
     if (raw) {
       await redis.expire(key, SESSION_TTL_SEC);
-      return { sid, state: JSON.parse(raw) };
+      const stored = JSON.parse(raw);
+      stored.history = stored.history || [];
+      return { sid, state: stored };
     }
-    const state = { active_entity_id: null, active_entity_type: null, active_entity_name: null };
+    const state = { active_entity_id: null, active_entity_type: null, active_entity_name: null, history: [] };
     await redis.setex(key, SESSION_TTL_SEC, JSON.stringify(state));
     return { sid, state };
   } else {
     if (!sessions.has(sid)) sessions.set(sid, makeSessionLocal());
     const sess = sessions.get(sid);
     sess.expiresAt = Date.now() + SESSION_TTL_SEC * 1000;
+    sess.state.history = sess.state.history || [];
     return { sid, state: sess.state };
   }
 }
@@ -93,12 +110,38 @@ async function getSession(req, res) {
 async function saveSession(sid, state) {
   if (redis) {
     const key = `session:${sid}`;
+    state.history = state.history || [];
     await redis.setex(key, SESSION_TTL_SEC, JSON.stringify(state));
   } else {
     if (!sessions.has(sid)) sessions.set(sid, makeSessionLocal());
     sessions.get(sid).state = state;
+    sessions.get(sid).state.history = state.history || [];
     sessions.get(sid).expiresAt = Date.now() + SESSION_TTL_SEC * 1000;
   }
+}
+
+function buildHistoryPayload(history) {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const start = Math.max(0, history.length - HISTORY_ENTRY_LIMIT);
+  return history.slice(start).map(entry => ({ role: entry.role, content: entry.content }));
+}
+
+function appendHistoryEntry(state, role, text) {
+  if (!text) return;
+  const trimmed = text.toString().trim();
+  if (!trimmed) return;
+  const history = state.history || [];
+  const content = trimmed.length > MEMORY_MAX_ENTRY_CHARS ? trimmed.slice(-MEMORY_MAX_ENTRY_CHARS) : trimmed;
+  history.push({ role, content });
+  while (history.length > HISTORY_ENTRY_LIMIT) history.shift();
+  state.history = history;
+}
+
+async function recordConversation(state, sid, user, assistant) {
+  if (!user && !assistant) return;
+  if (user) appendHistoryEntry(state, 'user', user);
+  if (assistant) appendHistoryEntry(state, 'assistant', assistant);
+  await saveSession(sid, state);
 }
 
 function isContextDependent(q) {
@@ -160,6 +203,17 @@ app.post('/api/v1/query', async (req, res) => {
   const { sid, state } = await getSession(req, res);
   let originalQuery = req.body && req.body.query ? req.body.query : '';
   let queryToSend = originalQuery;
+  const historyPayload = buildHistoryPayload(state.history);
+  const buildBackendRequest = (q) => {
+    const payload = { query: q };
+    if (historyPayload.length > 0) payload.history = historyPayload;
+    return payload;
+  };
+
+  async function respondWithHistory(payload, assistantAnswer) {
+    await recordConversation(state, sid, originalQuery, assistantAnswer);
+    return res.json(payload);
+  }
 
   try {
     if (isContextDependent(originalQuery) && state.active_entity_name) {
@@ -172,7 +226,7 @@ app.post('/api/v1/query', async (req, res) => {
     // forward x-api-key if present
     if (req.header('x-api-key')) headers['x-api-key'] = req.header('x-api-key');
 
-    const backendResp = await axios.post(`${BACKEND}/api/v1/query`, { query: queryToSend }, { headers, timeout: 120000 });
+    const backendResp = await axios.post(`${BACKEND}/api/v1/query`, buildBackendRequest(queryToSend), { headers, timeout: 120000 });
 
     const data = backendResp.data || {};
 
@@ -279,7 +333,10 @@ app.post('/api/v1/query', async (req, res) => {
               else if (r.latest) ans = `${state.active_course.title} was last taught on ${r.latest}.`;
               else ans = `No schedule data available for ${state.active_course.title}.`;
 
-              return res.json({ answer: ans, sources: [ `SQL:${schedResp.data.course_code || state.active_course.id}` ], context: { active_entity: state.active_course.title, entity_type: 'COURSE' } });
+              return await respondWithHistory(
+                { answer: ans, sources: [ `SQL:${schedResp.data.course_code || state.active_course.id}` ], context: { active_entity: state.active_course.title, entity_type: 'COURSE' } },
+                ans
+              );
             }
           } catch (e) {
             // ignore and fall back to rewrite+backend
@@ -288,10 +345,11 @@ app.post('/api/v1/query', async (req, res) => {
           // fallback: rewrite to use course title and let backend handle it
           queryToSend = rewriteQuery(originalQuery, state.active_course.title);
           rewriteCounter.inc();
-          const backendResp2 = await axios.post(`${BACKEND}/api/v1/query`, { query: queryToSend }, { headers, timeout: 120000 });
+          const backendResp2 = await axios.post(`${BACKEND}/api/v1/query`, buildBackendRequest(queryToSend), { headers, timeout: 120000 });
           const data2 = backendResp2.data || {};
           const out2 = Object.assign({}, data2, { context: { active_entity: state.active_course.title, entity_type: 'COURSE' } });
-          return res.json(out2);
+          const assistantAnswer2 = data2.answer || data2.text || '';
+          return await respondWithHistory(out2, assistantAnswer2);
         }
 
       } catch (e) {
@@ -301,9 +359,10 @@ app.post('/api/v1/query', async (req, res) => {
 
     // Optionally augment response with context for UI transparency
     const out = Object.assign({}, data, { context: { active_entity: state.active_entity_name, entity_type: state.active_entity_type } });
+    const assistantAnswerFinal = data.answer || data.text || '';
 
     // Return backend response unchanged except optional context
-    return res.json(out);
+    return await respondWithHistory(out, assistantAnswerFinal);
   } catch (err) {
     console.error('Gateway error:', err.message);
     if (err.response && err.response.data) {

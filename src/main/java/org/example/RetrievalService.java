@@ -3,11 +3,14 @@ package org.example;
 import java.io.IOException;
 import java.util.*;
 import java.util.stream.Collectors;
+import org.example.dto.ConversationTurn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class RetrievalService {
     private static final Logger LOG = LoggerFactory.getLogger(RetrievalService.class);
+    private static final int HISTORY_MAX_ENTRIES = 6;
+    private static final int HISTORY_MAX_CHARS_PER_ENTRY = 800;
 
     private final OnnxEmbedder embedder;
     private final QdrantClient qdrant;
@@ -256,8 +259,9 @@ public class RetrievalService {
      * Full RAG pipeline with metadata for UI display.
      * Returns structured QueryResult with answer, sources, SQL, retrieval chain, etc.
      */
-    public QueryResult askWithMetadata(String query) throws Exception {
+    public QueryResult askWithMetadata(String query, List<ConversationTurn> history) throws Exception {
         QueryResult result = new QueryResult();
+        final String conversationHistory = buildConversationHistory(history);
         
         // 0. Check for greetings first (no RAG needed)
         if (IntentClassifier.isGreeting(query)) {
@@ -370,7 +374,7 @@ public class RetrievalService {
                     context.add(sqlChunk);
                 }
 
-                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K, conversationHistory);
                 long t0 = System.nanoTime();
                 String ans = llm.generate(prompt, 300);
                 LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -396,7 +400,7 @@ public class RetrievalService {
                     List<DbChunk> ctx = retrieve(query);
                     for (DbChunk c : ctx) sourceIds.add(c.getChunkId());
 
-                    String prompt = promptBuilder.buildLenientPrompt(ctx, query, Config.CONTEXT_K);
+                    String prompt = promptBuilder.buildLenientPrompt(ctx, query, Config.CONTEXT_K, conversationHistory);
                     long t0 = System.nanoTime();
                     String ans = llm.generate(prompt, 300);
                     LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -413,7 +417,7 @@ public class RetrievalService {
                 List<DbChunk> context = retrieve(query);
                 for (DbChunk c : context) sourceIds.add(c.getChunkId());
 
-                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+                String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K, conversationHistory);
                 long t0 = System.nanoTime();
                 String ans = llm.generate(prompt, 300);
                 LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -439,7 +443,7 @@ public class RetrievalService {
             List<DbChunk> context = retrieve(query);
             for (DbChunk c : context) sourceIds.add(c.getChunkId());
             
-            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K, conversationHistory);
             long t0 = System.nanoTime();
             String ans = llm.generate(prompt, 300);
             LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -474,7 +478,7 @@ public class RetrievalService {
                 if (!sourceIds.contains(c.getChunkId())) sourceIds.add(c.getChunkId());
             }
             
-            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+            String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K, conversationHistory);
             long t0 = System.nanoTime();
             String ans = llm.generate(prompt, 300);
             LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -489,7 +493,7 @@ public class RetrievalService {
         List<DbChunk> context = retrieve(query);
         for (DbChunk c : context) sourceIds.add(c.getChunkId());
         
-        String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K);
+        String prompt = promptBuilder.buildPrompt(context, query, Config.CONTEXT_K, conversationHistory);
         long t0 = System.nanoTime();
         String ans = llm.generate(prompt, 300);
         LOG.info("[timing] llm generate ms={}", (System.nanoTime() - t0) / 1_000_000);
@@ -673,6 +677,34 @@ public class RetrievalService {
      */
     private boolean shouldAttachRagContextForFactual() {
         return true; // or Config.SHOW_RAG_FOR_FACTS
+    }
+
+    private String buildConversationHistory(List<ConversationTurn> history) {
+        if (history == null || history.isEmpty()) return null;
+        int start = Math.max(0, history.size() - HISTORY_MAX_ENTRIES);
+        StringBuilder sb = new StringBuilder();
+        for (int i = start; i < history.size(); i++) {
+            ConversationTurn turn = history.get(i);
+            if (turn == null) continue;
+            String role = turn.getRole();
+            String label = "User";
+            if (role != null) {
+                if (role.equalsIgnoreCase("assistant")) label = "Assistant";
+                else if (role.equalsIgnoreCase("user")) label = "User";
+                else label = role;
+            }
+            String content = turn.getContent();
+            if (content == null) continue;
+            String trimmed = content.trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.length() > HISTORY_MAX_CHARS_PER_ENTRY) {
+                trimmed = trimmed.substring(trimmed.length() - HISTORY_MAX_CHARS_PER_ENTRY);
+            }
+            if (sb.length() > 0) sb.append("\n");
+            sb.append(label).append(": ").append(trimmed);
+        }
+        String result = sb.toString().trim();
+        return result.isEmpty() ? null : result;
     }
 
     /**

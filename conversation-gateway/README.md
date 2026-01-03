@@ -8,6 +8,7 @@ Features:
 - Forwards requests to existing backend `POST /api/v1/query`
 - Updates session ConversationState using Qdrant payloads (top source)
 - Returns backend response unchanged (optionally augments with `context`)
+- Tracks the last few user/assistant turns and forwards them as a `history` payload so the backend can keep conversational memory.
 
 Quick start
 
@@ -35,6 +36,7 @@ Notes
 - Sessions are stored in-memory with TTL (default 900s). For multi-instance deployments, use Redis and modify the code to persist session state.
 - The gateway expects the vector DB payload contract (see `../PAYLOAD_CONTRACT.md`).
 - Forward `x-api-key` header to the backend for protected APIs.
+- Configure the memory window with `MEMORY_MAX_PAIRS` (default 3 user+assistant turns) and `MEMORY_MAX_ENTRY_CHARS` (default 800 characters per turn) before starting the gateway.
 
 Security
 

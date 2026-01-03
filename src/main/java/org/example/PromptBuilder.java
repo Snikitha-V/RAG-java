@@ -25,6 +25,10 @@ public class PromptBuilder {
      * contextChunks: reranked list (most relevant first).
      */
     public String buildPrompt(List<DbChunk> contextChunks, String userQuestion, int contextK) {
+        return buildPrompt(contextChunks, userQuestion, contextK, null);
+    }
+
+    public String buildPrompt(List<DbChunk> contextChunks, String userQuestion, int contextK, String conversationHistory) {
         // estimate available tokens for evidence
         int available = maxTotalTokens - reservedForAnswer - overheadTokens;
         int used = 0;
@@ -76,8 +80,12 @@ public class PromptBuilder {
         prompt.append("[SYSTEM]\n")
               .append("You are a factual assistant. You may only use the evidence excerpts provided below to answer the user's question. If the evidence does not support the question, say exactly: \"I don't have that information in your database.\"\n\n")
               .append("[EVIDENCE]\n")
-              .append(evidence.toString())
-              .append("[USER QUESTION]\n")
+              .append(evidence.toString());
+        if (conversationHistory != null && !conversationHistory.isBlank()) {
+            prompt.append("[CONVERSATION HISTORY]\n")
+                  .append(conversationHistory).append("\n\n");
+        }
+        prompt.append("[USER QUESTION]\n")
               .append(userQuestion).append("\n\n")
               .append("[INSTRUCTIONS]\n")
               .append("1. Answer concisely (1–3 sentences).\n")
@@ -101,6 +109,10 @@ public class PromptBuilder {
      * and to explicitly mark uncertainty, while still avoiding invented facts.
      */
     public String buildLenientPrompt(List<DbChunk> contextChunks, String userQuestion, int contextK) {
+        return buildLenientPrompt(contextChunks, userQuestion, contextK, null);
+    }
+
+    public String buildLenientPrompt(List<DbChunk> contextChunks, String userQuestion, int contextK, String conversationHistory) {
         // reuse evidence assembly same as buildPrompt
         int available = maxTotalTokens - reservedForAnswer - overheadTokens;
         int used = 0;
@@ -145,8 +157,12 @@ public class PromptBuilder {
         prompt.append("[SYSTEM]\n")
               .append("You are an assistant. Use the evidence below to answer the user's question. If the evidence is incomplete, provide a best-effort answer but clearly mark uncertainty (e.g., 'I think', 'This is likely'). Do not invent facts.\n\n")
               .append("[EVIDENCE]\n")
-              .append(evidence.toString())
-              .append("[USER QUESTION]\n")
+              .append(evidence.toString());
+        if (conversationHistory != null && !conversationHistory.isBlank()) {
+            prompt.append("[CONVERSATION HISTORY]\n")
+                  .append(conversationHistory).append("\n\n");
+        }
+        prompt.append("[USER QUESTION]\n")
               .append(userQuestion).append("\n\n")
               .append("[INSTRUCTIONS]\n")
               .append("1. Answer concisely (1–3 sentences).\n")

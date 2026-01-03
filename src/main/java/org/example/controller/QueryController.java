@@ -60,7 +60,7 @@ public class QueryController {
             }
 
             // Call retrieval service with full pipeline
-            QueryResult result = retrievalService.askWithMetadata(q);
+            QueryResult result = retrievalService.askWithMetadata(q, request.getHistory());
 
             long latencyMs = System.currentTimeMillis() - start;
 
