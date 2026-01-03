@@ -305,6 +305,58 @@ LLM_HOST=localhost             # Mistral LLM host
 LLM_PORT=8081                 # Mistral LLM port
 ```
 
+### LLM Plugin System (Bring Your Own LLM)
+
+We added a simple LLM plug-in system so customers can swap LLMs by configuration only (no code changes).
+
+- Default: `LLM_PROVIDER=llama` (uses existing local `llama-server` at `LLM_URL`)
+- Other options: `openai`, `custom_http`
+
+Environment variables you can set:
+
+```bash
+# Select provider: llama | openai | custom_http
+LLM_PROVIDER=llama
+
+# URL for the provider (e.g. llama-server or custom endpoint)
+LLM_URL=http://localhost:8081
+
+# API key for cloud/custom providers
+LLM_API_KEY=sk-xxxx
+
+# OpenAI model name (if using OpenAI provider)
+LLM_MODEL=gpt-4
+
+# Tuning
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=300
+```
+
+How it works:
+
+- The application talks to an `LLMProvider` interface. Concrete providers are implemented as adapters:
+    - `LlamaCppProvider` (default)
+    - `OpenAIProvider`
+    - `CustomHttpProvider` (customer HTTP API)
+- To switch LLMs, change only environment variables above. No retrieval, prompt, or SQL logic changes are required.
+
+Quick examples:
+
+Use OpenAI:
+```bash
+export LLM_PROVIDER=openai
+export LLM_API_KEY=sk-xxxx
+export LLM_MODEL=gpt-4
+export LLM_URL=https://api.openai.com
+```
+
+Use customer HTTP LLM:
+```bash
+export LLM_PROVIDER=custom_http
+export LLM_URL=https://customer-llm.company.com/generate
+export LLM_API_KEY=their-api-key-if-needed
+```
+
 ### Application Properties
 
 Edit `src/main/resources/application.properties` for:
