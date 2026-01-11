@@ -130,73 +130,90 @@ The system uses **two complementary search methods**:
 
 ## Quick Start
 
-### Option 1: Run Everything with Docker Compose (Recommended)
+### Step 1: Create Environment File
 
 ```bash
 cd rag-learning
+
+# Create .env file with your database password
+echo "DB_PASS=your_secure_password" > .env
+echo "LLM_URL=http://host.docker.internal:8081" >> .env
+```
+
+### Step 2: Start Core Services with Docker Compose
+
+```bash
 docker-compose up -d
 ```
 
 This starts:
 - **PostgreSQL 15** (Port 5432)
 - **Qdrant 1.12.0** (Port 6333)
-- **Mistral 7B LLM** (Port 8081)
 - **Spring Boot App** (Port 8080)
 
-**Environment Variables:**
+### Step 3: Start the LLM Server (separate terminal)
+
+The LLM runs locally using llama.cpp. Open a **new terminal** and run:
+
 ```bash
-export DB_PASS="your_postgres_password"  # Set your PostgreSQL password
+cd rag-learning/llama
+./llama-server -m ../models/mistral-7b-instruct/mistral-7b-instruct-v0.2.Q4_K_M.gguf --host 0.0.0.0 --port 8081 -c 4096
 ```
 
-Access the application: `http://localhost:8080`
+**Windows:**
+```powershell
+cd rag-learning\llama
+.\llama-server.exe -m ..\models\mistral-7b-instruct\mistral-7b-instruct-v0.2.Q4_K_M.gguf --host 0.0.0.0 --port 8081 -c 4096
+```
 
-### Option 2: Run Locally with Pre-existing Docker Services
+Wait until you see: `llama server listening at http://0.0.0.0:8081`
 
-If you already have PostgreSQL and Qdrant running in Docker:
+### Step 4: (Optional) Start Conversation Gateway
+
+For session-aware conversations with memory:
+
+```bash
+docker-compose -f docker-compose.gateway.yml up -d
+```
+
+This adds:
+- **Conversation Gateway** (Port 3000) - session memory, follow-up rewrites
+- **Redis** (Port 6379) - session storage
+
+### Verify Everything is Running
+
+```bash
+# Check all containers
+docker ps
+
+# Test health endpoints
+curl http://localhost:8080/actuator/health  # Spring Boot
+curl http://localhost:6333/health           # Qdrant
+curl http://localhost:8081/health           # LLM
+curl http://localhost:3000/health           # Gateway (if started)
+```
+
+### Access Points
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| Web UI | http://localhost:8080 | Main application |
+| Gateway | http://localhost:3000 | Session-aware proxy |
+| API Health | http://localhost:8080/actuator/health | Health check |
+| Qdrant Dashboard | http://localhost:6333/dashboard | Vector DB UI |
+
+### Alternative: Run Locally (Development)
 
 ```bash
 cd rag-learning
 
-# Set database password (use your own)
-export DB_PASS="your_postgres_password"
+# Set environment variables
+export DB_PASS="your_password"
 
-# Build and run Spring Boot app
-mvn clean compile
-mvn org.springframework.boot:spring-boot-maven-plugin:3.2.4:run
-```
-
-The app will start on `http://localhost:8080`
-
-### Option 3: Run JAR After Building
-
-```bash
-cd rag-learning
-
-# Build JAR
+# Build and run
 mvn clean package -DskipTests
-
-# Start Docker services
-docker-compose up -d
-
-# Run the JAR with environment variables
-export DB_PASS="your_postgres_password"
 java -jar target/rag-learning-1.0-SNAPSHOT.jar
 ```
-
-### Option 2b: Conversation Gateway / Proxy (optional front-door)
-
-Runs on port 3000 in front of the backend. Provides session-aware rewrites of follow-ups, deterministic Qdrant payload fetches (matching Java UUID v3 of `chunk_id`), health/metrics endpoints, and keeps the exposed surface read-only.
-
-```bash
-cd rag-learning/conversation-gateway
-npm install
-BACKEND_BASE=http://localhost:8080 \
-QDRANT_BASE=http://localhost:6333 \
-PORT=3000 \
-npm start
-```
-
-Health: `http://localhost:3000/health` • Metrics: `http://localhost:3000/metrics`
 
 ## Database Setup
 
